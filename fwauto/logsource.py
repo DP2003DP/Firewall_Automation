@@ -1,15 +1,23 @@
 """Log sources. Each yields (timestamp, message) tuples as lines arrive."""
 
 import json
+import os
+import re
 import subprocess
 import time
+from datetime import datetime
 
-# sshd logs as "sshd" (older) or "sshd-session" (OpenSSH 9.8+); UFW logs
-# through the kernel. "+" is journalctl's OR.
+# Match on fields journald fills in itself (underscore prefix). SYSLOG_IDENTIFIER
+# is chosen by the sender, so "logger -t sshd ..." from any local user would
+# pass a filter on it. _COMM alone is also forgeable (copy logger to
+# /tmp/sshd), so require root as well.
+# sshd logs as "sshd" (older), "sshd-session" (OpenSSH 9.8+) or "sshd-auth"
+# (OpenSSH 10+). Same-field matches are ORed, different fields ANDed, and "+"
+# starts an alternative; UFW logs through the kernel.
+SSH_PROGRAMS = ("sshd", "sshd-session", "sshd-auth")
 JOURNAL_CMD = [
     "journalctl", "--follow", "--lines=0", "--output=json",
-    "SYSLOG_IDENTIFIER=sshd", "+",
-    "SYSLOG_IDENTIFIER=sshd-session", "+",
+    "_UID=0", *["_COMM=" + p for p in SSH_PROGRAMS], "+",
     "_TRANSPORT=kernel",
 ]
 
@@ -35,16 +43,70 @@ def follow_journal():
         proc.terminate()
 
 
+# rsyslog on current Ubuntu: "2026-11-16T14:03:22.123456-05:00 host sshd[1]: ..."
+RE_ISO = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:?\d\d)?)\s")
+# classic syslog: "Nov 16 14:03:22 host sshd[1]: ..."
+RE_BSD = re.compile(r"^([A-Z][a-z]{2} [ \d]\d \d\d:\d\d:\d\d)\s")
+
+
+def line_time(line, now=None):
+    """Timestamp at the start of a syslog line, or None if there isn't one."""
+    m = RE_ISO.match(line)
+    if m:
+        text = m.group(1).replace("Z", "+00:00")
+        try:
+            return datetime.fromisoformat(text).timestamp()
+        except ValueError:
+            return None
+    m = RE_BSD.match(line)
+    if m:
+        now = time.time() if now is None else now
+        year = datetime.fromtimestamp(now).year
+        try:
+            stamp = datetime.strptime("%d %s" % (year, m.group(1)),
+                                      "%Y %b %d %H:%M:%S").timestamp()
+        except ValueError:
+            return None
+        # no year in the line: a December entry read in January is last year's
+        if stamp > now + 86400:
+            stamp = datetime.strptime("%d %s" % (year - 1, m.group(1)),
+                                      "%Y %b %d %H:%M:%S").timestamp()
+        return stamp
+    return None
+
+
 def follow_file(path, from_start=False, follow=True):
-    """Tail a plain log file such as /var/log/auth.log."""
-    with open(path, errors="replace") as fh:
+    """Tail a plain log file such as /var/log/auth.log.
+
+    Lines are stamped with the time written in them, so reading an old file
+    with from_start does not squash weeks of history into one second. Follows
+    the file across logrotate (rename or copytruncate).
+    """
+    fh = open(path, errors="replace")
+    try:
         if not from_start:
             fh.seek(0, 2)
         while True:
             line = fh.readline()
             if line:
-                yield time.time(), line.rstrip("\n")
-            elif follow:
-                time.sleep(0.5)
-            else:
+                line = line.rstrip("\n")
+                stamp = line_time(line)
+                yield (time.time() if stamp is None else stamp), line
+                continue
+            if not follow:
                 return
+            if _rotated(fh, path):
+                fh.close()
+                fh = open(path, errors="replace")
+                continue
+            time.sleep(0.5)
+    finally:
+        fh.close()
+
+
+def _rotated(fh, path):
+    try:
+        st = os.stat(path)
+    except OSError:
+        return False  # mid-rotation; the new file isn't there yet
+    return st.st_ino != os.fstat(fh.fileno()).st_ino or st.st_size < fh.tell()

@@ -2,14 +2,16 @@
 
 import argparse
 import ipaddress
+import math
 import os
 import sqlite3
 import sys
+import time
 from datetime import datetime
 
 from . import __version__, config, logsource
 from .firewall import Firewall, FirewallError
-from .monitor import Monitor, log
+from .monitor import Monitor, duration, log
 from .storage import Storage
 
 
@@ -35,6 +37,20 @@ def ip_arg(text):
         raise argparse.ArgumentTypeError("%r is not an IP address" % text)
 
 
+def duration_arg(text):
+    units = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+    try:
+        if text[-1:] in units:
+            value = float(text[:-1]) * units[text[-1]]
+        else:
+            value = float(text)
+    except ValueError:
+        value = -1
+    if value <= 0:
+        raise argparse.ArgumentTypeError("%r is not a duration like 30m or 2h" % text)
+    return math.ceil(value)
+
+
 def need_root(args):
     if not args.dry_run and os.geteuid() != 0:
         sys.exit("This command changes firewall rules. Run it with sudo.")
@@ -55,13 +71,23 @@ def cmd_monitor(args, cfg, storage, firewall):
         cfg["ssh_max_failures"], cfg["ssh_window_seconds"],
         "%s ports / %ss" % (cfg["scan_max_ports"], cfg["scan_window_seconds"])
         if cfg["scan_detection"] else "off",
-        "%ss" % cfg["ban_seconds"] if cfg["ban_seconds"] else "until unblocked",
+        "%s, doubling per repeat offence (max %s)" % (
+            duration(cfg["ban_seconds"]), duration(cfg["ban_max_seconds"]))
+        if cfg["ban_seconds"] else "until unblocked",
     ))
+    monitor = Monitor(cfg, storage, firewall)
+    monitor.reconcile()
     try:
-        Monitor(cfg, storage, firewall).run(source)
+        monitor.run(source)
     except KeyboardInterrupt:
         log("stopped")
-    return 0
+        return 0
+    if args.file and args.once:
+        return 0
+    # The log stream should never end. Exit non-zero so systemd restarts us
+    # instead of leaving the server unprotected.
+    log("log source ended unexpectedly")
+    return 1
 
 
 def cmd_blocked(args, cfg, storage, firewall):
@@ -69,8 +95,10 @@ def cmd_blocked(args, cfg, storage, firewall):
     if not rows:
         print("No IP addresses are blocked.")
         return 0
-    table(["IP ADDRESS", "BLOCKED AT", "REASON"],
-          [(r["ip"], fmt_time(r["blocked_at"]), r["reason"]) for r in rows])
+    table(["IP ADDRESS", "BLOCKED AT", "EXPIRES", "REASON"],
+          [(r["ip"], fmt_time(r["blocked_at"]),
+            fmt_time(r["expires_at"]) if r["expires_at"] else "never",
+            r["reason"]) for r in rows])
     return 0
 
 
@@ -96,9 +124,12 @@ def cmd_block(args, cfg, storage, firewall):
         firewall.block(args.ip, "fwauto manual")
     except FirewallError as exc:
         sys.exit("ufw failed: %s" % exc)
-    storage.set_blocked(args.ip, args.reason)
-    storage.add_incident(args.ip, "manual", args.reason, "", "blocked")
-    print("Blocked %s." % args.ip)
+    now = time.time()
+    expires = now + args.seconds if args.seconds else None
+    storage.set_blocked(args.ip, args.reason, now, expires)
+    storage.add_incident(args.ip, "manual", args.reason, "", "blocked", now)
+    print("Blocked %s %s." % (
+        args.ip, "for " + duration(args.seconds) if args.seconds else "until unblocked"))
     return 0
 
 
@@ -117,6 +148,30 @@ def cmd_unblock(args, cfg, storage, firewall):
     return 0
 
 
+def cmd_stats(args, cfg, storage, firewall):
+    since = time.time() - args.hours * 3600 if args.hours else 0.0
+    st = storage.stats(since, args.top)
+    span = "last %g hours" % args.hours if args.hours else "all time"
+    total = sum(r["n"] for r in st["by_kind"])
+    print("fwauto statistics (%s)" % span)
+    print()
+    print("incidents: %d   currently blocked: %d" % (total, st["active_blocks"]))
+    for r in st["by_kind"]:
+        print("  %-18s %d" % (r["kind"], r["n"]))
+    sections = [
+        ("top attackers", ["IP ADDRESS", "INCIDENTS", "TYPES", "LAST SEEN"],
+         [(r["ip"], r["n"], r["kinds"], fmt_time(r["last"])) for r in st["attackers"]]),
+        ("usernames tried", ["USERNAME", "INCIDENTS"], st["usernames"]),
+        ("ports probed", ["PORT", "INCIDENTS"], st["ports"]),
+    ]
+    for title, headers, rows in sections:
+        if rows:
+            print()
+            print(title)
+            table(headers, rows)
+    return 0
+
+
 def build_parser():
     p = argparse.ArgumentParser(
         prog="fwauto",
@@ -127,11 +182,12 @@ def build_parser():
                    % config.DEFAULT_CONFIG_PATH)
     p.add_argument("--db", help="database path (overrides the config file)")
     p.add_argument("--dry-run", action="store_true",
-                   help="record incidents but do not touch UFW")
+                   help="do not touch UFW; uses a throwaway database unless --db is given")
     sub = p.add_subparsers(dest="command", required=True)
 
     m = sub.add_parser("monitor", help="watch the logs and block attackers")
-    m.add_argument("--file", help="tail this log file instead of the journal")
+    m.add_argument("--file", help="tail this log file instead of the journal "
+                   "(less safe: any local user can write auth lines with logger)")
     m.add_argument("--from-start", action="store_true",
                    help="with --file: read from the beginning")
     m.add_argument("--once", action="store_true",
@@ -150,7 +206,15 @@ def build_parser():
     k = sub.add_parser("block", help="block an IP address by hand")
     k.add_argument("ip", type=ip_arg)
     k.add_argument("--reason", default="manual block")
+    k.add_argument("--for", dest="seconds", type=duration_arg, default=0,
+                   help="lift the block after this long (90s, 30m, 2h, 1d)")
     k.set_defaults(func=cmd_block)
+
+    s = sub.add_parser("stats", help="summary of attacks and blocks")
+    s.add_argument("--hours", type=float, default=0,
+                   help="only the last N hours (default: all time)")
+    s.add_argument("--top", type=int, default=5, help="rows per list")
+    s.set_defaults(func=cmd_stats)
 
     u = sub.add_parser("unblock", help="remove a block")
     u.add_argument("ip", type=ip_arg)
@@ -166,8 +230,14 @@ def main(argv=None):
         sys.exit("config error: %s" % exc)
     if args.db:
         cfg["db_path"] = args.db
+    elif args.dry_run:
+        # a dry run must not leave fake blocks in the real database
+        cfg["db_path"] = ":memory:"
     try:
         storage = Storage(cfg["db_path"])
     except (OSError, sqlite3.Error) as exc:
         sys.exit("cannot open database %s: %s (try sudo)" % (cfg["db_path"], exc))
-    return args.func(args, cfg, storage, Firewall(dry_run=args.dry_run))
+    try:
+        return args.func(args, cfg, storage, Firewall(dry_run=args.dry_run))
+    finally:
+        storage.db.close()

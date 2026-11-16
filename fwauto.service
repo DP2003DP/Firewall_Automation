@@ -5,8 +5,15 @@ After=network.target ufw.service
 [Service]
 ExecStart=/usr/local/bin/fwauto monitor
 Environment=PYTHONUNBUFFERED=1
-Restart=on-failure
+# the log stream should never end; come back whatever the exit code
+Restart=always
 RestartSec=3
+# needs root for ufw, but nothing outside the firewall config and its own db
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/etc/ufw /var/lib/fwauto /run
 
 [Install]
 WantedBy=multi-user.target

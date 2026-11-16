@@ -1,6 +1,7 @@
 """Thin wrapper around the ufw command."""
 
 import ipaddress
+import re
 import shutil
 import subprocess
 
@@ -43,5 +44,29 @@ class Firewall:
     def status(self):
         return self._run("status")
 
+    def denied_sources(self):
+        """Addresses that have a "deny from <ip>" rule in ufw right now."""
+        if self.dry_run:
+            return None
+        return parse_denied(self._run("status"))
+
     def is_active(self):
         return self.dry_run or self.status().startswith("Status: active")
+
+
+# "Anywhere                   DENY        10.0.0.5                   # fwauto ..."
+# "Anywhere (v6)              DENY        2001:db8::1"
+# Only a blanket deny counts; "80/tcp DENY 10.0.0.5" still lets ssh through.
+RE_DENY = re.compile(r"^Anywhere(?: \(v6\))?\s+DENY(?: IN)?\s+(\S+)\s*$")
+
+
+def parse_denied(status):
+    found = set()
+    for line in status.splitlines():
+        m = RE_DENY.match(line.split("#", 1)[0])
+        if m:
+            try:
+                found.add(str(ipaddress.ip_address(m.group(1))))
+            except ValueError:
+                pass
+    return found

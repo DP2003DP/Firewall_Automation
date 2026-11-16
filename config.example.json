@@ -4,6 +4,7 @@
   "scan_max_ports": 6,
   "scan_window_seconds": 60,
   "scan_detection": true,
-  "ban_seconds": 0,
+  "ban_seconds": 3600,
+  "ban_max_seconds": 604800,
   "whitelist": ["127.0.0.0/8", "::1/128"]
 }

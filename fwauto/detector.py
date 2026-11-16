@@ -9,20 +9,29 @@ import re
 from collections import defaultdict, deque
 from dataclasses import dataclass
 
+# The username is attacker-controlled and may contain spaces, so a client can
+# log in as "x from 192.0.2.10 port 22" to plant a fake address in the line.
+# The real address is always the last "from ... port ..." in the message, so
+# match the username greedily and anchor the address at the end of the line.
+
 # sshd: "Failed password for [invalid user ]bob from 10.0.0.5 port 4242 ssh2"
 RE_FAILED = re.compile(
     r"Failed (?:password|keyboard-interactive/pam) for "
-    r"(?P<invalid>invalid user )?(?P<user>\S*) from (?P<ip>\S+) port (?P<port>\d+)"
+    r"(?P<invalid>invalid user )?(?P<user>.*) from (?P<ip>\S+) port (?P<port>\d+)"
+    r"(?: ssh2)?(?: \[preauth\])?\s*$"
 )
 # sshd: "Invalid user admin from 10.0.0.5 port 4242"
 RE_INVALID = re.compile(
-    r"Invalid user (?P<user>\S*) from (?P<ip>\S+) port (?P<port>\d+)"
+    r"Invalid user (?P<user>.*) from (?P<ip>\S+) port (?P<port>\d+)"
+    r"(?: \[preauth\])?\s*$"
 )
-# kernel: "[UFW BLOCK] IN=eth0 ... SRC=10.0.0.5 DST=10.0.0.1 ... PROTO=TCP SPT=1 DPT=23"
+# kernel: "[UFW BLOCK] IN=eth0 OUT= MAC=... SRC=10.0.0.5 DST=10.0.0.1 ... PROTO=TCP SPT=1 DPT=23 ... SYN URGP=0"
 RE_UFW = re.compile(
     r"\[UFW BLOCK\].*?\bSRC=(?P<ip>\S+) DST=(?P<dst>\S+).*?"
-    r"\bPROTO=(?P<proto>TCP|UDP)\b.*?\bDPT=(?P<dport>\d+)"
+    r"\bPROTO=(?P<proto>TCP|UDP)\b.*?\bDPT=(?P<dport>\d+)(?P<rest>.*)$"
 )
+RE_MAC = re.compile(r"\bMAC=(?P<mac>\S*)")
+BROADCAST_MAC = "ff:ff:ff:ff:ff:ff"
 
 SSH_BRUTE_FORCE = "ssh_brute_force"
 PORT_SCAN = "port_scan"
@@ -42,6 +51,33 @@ def _valid_ip(text):
         return str(ipaddress.ip_address(text))
     except ValueError:
         return None
+
+
+def _is_new_connection(proto, rest):
+    """True for a packet that starts a connection.
+
+    Stray ACK/FIN/RST packets from servers this host talked to (after the
+    connection state expired) also hit the deny rule, each on a different
+    ephemeral port, and would otherwise look like a scan.
+    """
+    if proto != "TCP":
+        return True
+    flags = set(rest.split())
+    return "SYN" in flags and "ACK" not in flags
+
+
+def _is_broadcast(message, dst):
+    addr = ipaddress.ip_address(dst)
+    if addr.is_multicast or dst == "255.255.255.255":
+        return True
+    # The kernel logs MAC=<dst mac>:<src mac>:<type>. A subnet broadcast
+    # (192.168.1.255 on a /24) goes to the broadcast MAC, whatever the netmask.
+    m = RE_MAC.search(message)
+    return bool(m and m["mac"].lower().startswith(BROADCAST_MAC))
+
+
+def _span(seconds):
+    return "%ds" % max(1, round(seconds))
 
 
 class Detector:
@@ -64,7 +100,8 @@ class Detector:
                 return None
             # sshd logs "Invalid user" and then "Failed password for invalid
             # user" for the same attempt. Count that attempt once.
-            if m["invalid"] and self._invalid_seen.pop((ip, m["port"]), None):
+            if m["invalid"] and (ip, m["port"]) in self._invalid_seen:
+                del self._invalid_seen[(ip, m["port"])]
                 return None
             return self._ssh_failure(ip, m["user"], timestamp)
 
@@ -82,9 +119,9 @@ class Detector:
                 ip, dst = _valid_ip(m["ip"]), _valid_ip(m["dst"])
                 if ip is None or dst is None:
                     return None
-                # Ignore multicast/broadcast chatter (mDNS, SSDP, ...).
-                dst_addr = ipaddress.ip_address(dst)
-                if dst_addr.is_multicast or dst.endswith(".255"):
+                if _is_broadcast(message, dst):
+                    return None
+                if not _is_new_connection(m["proto"], m["rest"]):
                     return None
                 return self._blocked_packet(ip, int(m["dport"]), timestamp)
         return None
@@ -98,11 +135,12 @@ class Detector:
             return None
         users = sorted({u for _, u in events if u})
         count = len(events)
+        span = now - events[0][0]
         del self._failures[ip]
         return Incident(
             ip=ip,
             kind=SSH_BRUTE_FORCE,
-            reason="%d failed SSH logins in %ds" % (count, self.ssh_window),
+            reason="%d failed SSH logins in %s" % (count, _span(span)),
             details="usernames tried: " + (", ".join(users) or "(none)"),
             timestamp=now,
         )
@@ -115,11 +153,12 @@ class Detector:
         if len(ports) < self.scan_max:
             return None
         hit = sorted(ports)
+        span = now - min(ports.values())
         del self._ports[ip]
         return Incident(
             ip=ip,
             kind=PORT_SCAN,
-            reason="probed %d ports in %ds" % (len(hit), self.scan_window),
+            reason="probed %d ports in %s" % (len(hit), _span(span)),
             details="ports: " + ", ".join(map(str, hit)),
             timestamp=now,
         )
