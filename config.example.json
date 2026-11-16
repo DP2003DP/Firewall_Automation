@@ -1,0 +1,9 @@
+{
+  "ssh_max_failures": 5,
+  "ssh_window_seconds": 60,
+  "scan_max_ports": 6,
+  "scan_window_seconds": 60,
+  "scan_detection": true,
+  "ban_seconds": 0,
+  "whitelist": ["127.0.0.0/8", "::1/128"]
+}

@@ -1,0 +1,12 @@
+[Unit]
+Description=fwauto - Linux Firewall Automation Tool
+After=network.target ufw.service
+
+[Service]
+ExecStart=/usr/local/bin/fwauto monitor
+Environment=PYTHONUNBUFFERED=1
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
