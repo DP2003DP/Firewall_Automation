@@ -56,9 +56,9 @@ def _valid_ip(text):
 def _is_new_connection(proto, rest):
     """True for a packet that starts a connection.
 
-    Stray ACK/FIN/RST packets from servers this host talked to (after the
-    connection state expired) also hit the deny rule, each on a different
-    ephemeral port, and would otherwise look like a scan.
+    A scan is a run of connection attempts. Counting only those keeps any
+    stray ACK/FIN/RST packets that reach the deny rule (say, from a server
+    after its connection state expired) from adding up to a fake scan.
     """
     if proto != "TCP":
         return True

@@ -81,6 +81,12 @@ class Storage:
         )
         self.db.commit()
 
+    def forget(self, ip):
+        """Drop an address's history, so its next ban starts from the first."""
+        self.db.execute("DELETE FROM incidents WHERE ip = ?", (ip,))
+        self.db.execute("DELETE FROM blocks WHERE ip = ? AND active = 0", (ip,))
+        self.db.commit()
+
     def is_blocked(self, ip):
         row = self.db.execute(
             "SELECT 1 FROM blocks WHERE ip = ? AND active = 1", (ip,)

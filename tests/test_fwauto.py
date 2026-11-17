@@ -432,6 +432,21 @@ class CliTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("ended unexpectedly", out)
 
+    def test_unblock_forget_resets_offences(self):
+        log = os.path.join(self.dir.name, "auth.log")
+        start = datetime.now().astimezone().replace(microsecond=0)
+        with open(log, "w") as fh:
+            for i in range(5):
+                fh.write("%s srv sshd[1]: %s\n" % (
+                    (start + timedelta(seconds=i)).isoformat(), failed("10.0.0.5")))
+        for _ in range(2):
+            code, out = self.run_cli("monitor", "--file", log, "--from-start", "--once")
+            self.assertIn("blocked for 1h", out)
+            self.assertNotIn("repeat offence 2", out)
+            self.run_cli("unblock", "--forget", "10.0.0.5")
+        code, out = self.run_cli("unblock", "--forget", "10.0.0.5")
+        self.assertEqual((code, out.strip()), (0, "Forgot the history of 10.0.0.5."))
+
     def test_block_for_and_unblock(self):
         code, out = self.run_cli("block", "203.0.113.9", "--for", "30m")
         self.assertEqual((code, out.strip()), (0, "Blocked 203.0.113.9 for 30m."))

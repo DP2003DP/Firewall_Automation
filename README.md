@@ -7,7 +7,7 @@ port scans, and blocks the source IP address with UFW. It keeps a record of
 every incident and has a small command line interface for reviewing and
 undoing blocks.
 
-Python 3 standard library only. Tested on Ubuntu 25.04 with UFW and OpenSSH.
+Python 3 standard library only. Tested on Ubuntu 25.04, and this version on Ubuntu 26.04 (OpenSSH 10.2, ufw 0.36.2).
 
 ## How it works
 
@@ -56,7 +56,7 @@ start blocking.
 sudo fwauto blocked                 # blocked IP addresses
 sudo fwauto incidents               # incident history (--ip X, -n 20)
 sudo fwauto stats                   # top attackers, usernames, ports (--hours 24)
-sudo fwauto unblock 10.99.0.2       # remove a block
+sudo fwauto unblock 10.99.0.2       # remove a block (--forget also clears its history)
 sudo fwauto block 203.0.113.9       # block by hand (--for 2h, default forever)
 journalctl -u fwauto -f             # live activity
 ```

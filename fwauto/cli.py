@@ -136,6 +136,10 @@ def cmd_block(args, cfg, storage, firewall):
 def cmd_unblock(args, cfg, storage, firewall):
     need_root(args)
     if not storage.is_blocked(args.ip):
+        if args.forget:
+            storage.forget(args.ip)
+            print("Forgot the history of %s." % args.ip)
+            return 0
         print("%s is not blocked by fwauto." % args.ip)
         return 1
     try:
@@ -143,6 +147,10 @@ def cmd_unblock(args, cfg, storage, firewall):
     except FirewallError as exc:
         sys.exit("ufw failed: %s" % exc)
     storage.set_unblocked(args.ip)
+    if args.forget:
+        storage.forget(args.ip)
+        print("Unblocked %s and forgot its history." % args.ip)
+        return 0
     storage.add_incident(args.ip, "unblock", "manual unblock", "", "unblocked")
     print("Unblocked %s." % args.ip)
     return 0
@@ -218,6 +226,8 @@ def build_parser():
 
     u = sub.add_parser("unblock", help="remove a block")
     u.add_argument("ip", type=ip_arg)
+    u.add_argument("--forget", action="store_true",
+                   help="also delete its incident history (next ban starts at the first)")
     u.set_defaults(func=cmd_unblock)
     return p
 

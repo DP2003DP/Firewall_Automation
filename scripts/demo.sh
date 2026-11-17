@@ -17,7 +17,8 @@ show_log() { sleep 2; journalctl -u fwauto -o cat --no-pager -n "${1:-1}"; }
 
 step "setup: attacker namespace $ATTACKER -> server 10.99.0.1"
 ./lab_setup.sh 2>/dev/null | tail -1
-reset_attacker
+# start from a clean slate so bans read 1h, 2h, 4h even after a rehearsal
+fwauto unblock --forget "$ATTACKER" >/dev/null 2>&1 || true
 ufw status | sed -n '1,8p'
 
 step "1. SSH brute force: 8 wrong passwords"
