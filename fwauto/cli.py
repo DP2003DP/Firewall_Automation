@@ -157,7 +157,9 @@ def cmd_block(args, cfg, storage, firewall):
 
 def cmd_unblock(args, cfg, storage, firewall):
     need_root(args)
-    if not storage.is_blocked(args.ip):
+    # the ufw rule can outlive its database row, e.g. after fwauto.db is deleted
+    in_ufw = args.ip in (firewall.denied_sources() or ())
+    if not storage.is_blocked(args.ip) and not in_ufw:
         if args.forget:
             storage.forget(args.ip)
             print("Forgot the history of %s." % args.ip)

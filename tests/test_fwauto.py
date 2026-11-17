@@ -533,6 +533,13 @@ class CliTests(unittest.TestCase):
         code, out = self.run_cli("unblock", "--forget", "10.0.0.5")
         self.assertEqual((code, out.strip()), (0, "Forgot the history of 10.0.0.5."))
 
+    def test_unblock_removes_rule_the_database_lost(self):
+        with mock.patch.object(Firewall, "denied_sources", return_value={"10.0.0.5"}), \
+                mock.patch.object(Firewall, "unblock") as unblock:
+            code, out = self.run_cli("unblock", "10.0.0.5")
+        self.assertEqual((code, out.strip()), (0, "Unblocked 10.0.0.5."))
+        unblock.assert_called_once_with("10.0.0.5")
+
     def test_watch_once_from_file(self):
         log = self.write_log(3)
         code, out = self.run_cli("watch", "--file", log, "--from-start", "--once")
