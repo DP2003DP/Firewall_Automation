@@ -25,7 +25,8 @@ CREATE TABLE IF NOT EXISTS blocks (
 CREATE INDEX IF NOT EXISTS incidents_ip ON incidents (ip);
 """
 
-AUTO_KINDS = ("ssh_brute_force", "port_scan")
+AUTO_KINDS = ("ssh_brute_force", "port_scan", "honeypot")
+_AUTO_SQL = "(%s)" % ", ".join("'%s'" % k for k in AUTO_KINDS)
 
 
 class Storage:
@@ -120,11 +121,11 @@ class Storage:
         attackers = q(
             "SELECT ip, COUNT(*) AS n, MAX(timestamp) AS last,"
             " GROUP_CONCAT(DISTINCT kind) AS kinds FROM incidents"
-            " WHERE timestamp >= ? AND kind IN ('ssh_brute_force', 'port_scan')"
+            " WHERE timestamp >= ? AND kind IN " + _AUTO_SQL +
             " GROUP BY ip ORDER BY n DESC, last DESC LIMIT ?", (since, top)).fetchall()
         details = [r["details"] for r in q(
             "SELECT details FROM incidents WHERE timestamp >= ?"
-            " AND kind IN ('ssh_brute_force', 'port_scan')", (since,))]
+            " AND kind IN " + _AUTO_SQL, (since,))]
         return {
             "by_kind": by_kind,
             "attackers": attackers,

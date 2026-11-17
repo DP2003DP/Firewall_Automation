@@ -23,22 +23,34 @@ while [ -z "$admin_ip" ] && [ "${pid:-1}" -gt 1 ]; do
     admin_ip=${client%% *}
     pid=$(ps -o ppid= -p "$pid" | tr -d ' ')
 done
+# A forged packet "from" the gateway or a DNS server could get it banned
+# (one packet is enough for a honeypot port), so never block those either.
+gateways=$(ip route show default 2>/dev/null | awk '{print $3}'; ip -6 route show default 2>/dev/null | awk '{print $3}')
+resolvers=$(resolvectl dns 2>/dev/null | sed 's/^[^:]*://' | tr ' ' '\n')
+
 if [ ! -f /etc/fwauto/config.json ]; then
-    python3 -I - "$admin_ip" <<'PY'
+    python3 -I - "$admin_ip" $gateways $resolvers <<'PY'
 import ipaddress, json, sys
 cfg = json.load(open("config.example.json"))
-ip = sys.argv[1]
-try:
-    ip = str(ipaddress.ip_address(ip))
-except ValueError:
-    ip = None
-if ip and not any(ipaddress.ip_address(ip) in ipaddress.ip_network(n)
-                  for n in cfg["whitelist"]):
-    cfg["whitelist"].append(ip)
-    print("whitelisted your address %s in /etc/fwauto/config.json" % ip)
-else:
+
+def add(text, what):
+    try:
+        ip = ipaddress.ip_address(text.split("%")[0])
+    except ValueError:
+        return False
+    if any(ip.version == n.version and ip in n
+           for n in map(ipaddress.ip_network, cfg["whitelist"])):
+        return True
+    cfg["whitelist"].append(str(ip))
+    print("whitelisted %s %s" % (what, ip))
+    return True
+
+admin, others = sys.argv[1], sys.argv[2:]
+if not add(admin, "your address"):
     print("note: could not tell your address; add it to the whitelist in"
           " /etc/fwauto/config.json (or rerun with ADMIN_IP=...)")
+for ip in others:
+    add(ip, "gateway/DNS server")
 with open("/etc/fwauto/config.json", "w") as fh:
     json.dump(cfg, fh, indent=2)
     fh.write("\n")

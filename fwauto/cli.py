@@ -90,6 +90,30 @@ def cmd_monitor(args, cfg, storage, firewall):
     return 1
 
 
+def cmd_watch(args, cfg, storage, firewall):
+    from .watch import Watcher
+    if args.file:
+        source = logsource.follow_file(args.file, args.from_start, not args.once)
+    elif args.once:
+        source = None
+    else:
+        if os.geteuid() != 0:
+            sys.exit("Reading the system journal needs root. Run it with sudo.")
+        source = logsource.follow_journal()
+    watcher = Watcher(cfg, storage, source)
+    if args.once:
+        if source is not None:
+            for stamp, message in source:
+                watcher.feed(stamp, message)
+        for text, _ in watcher.lines():
+            print(text)
+        return 0
+    if not sys.stdout.isatty():
+        sys.exit("fwauto watch needs a terminal (or use --once)")
+    watcher.run()
+    return 0
+
+
 def cmd_blocked(args, cfg, storage, firewall):
     rows = storage.active_blocks()
     if not rows:
@@ -201,6 +225,14 @@ def build_parser():
     m.add_argument("--once", action="store_true",
                    help="with --file: stop at end of file")
     m.set_defaults(func=cmd_monitor)
+
+    w = sub.add_parser("watch", help="live view of attacks in progress and blocks")
+    w.add_argument("--file", help="follow this log file instead of the journal")
+    w.add_argument("--from-start", action="store_true",
+                   help="with --file: read from the beginning")
+    w.add_argument("--once", action="store_true",
+                   help="print one snapshot and exit")
+    w.set_defaults(func=cmd_watch)
 
     b = sub.add_parser("blocked", aliases=["status"],
                        help="list blocked IP addresses")

@@ -6,5 +6,6 @@
   "scan_detection": true,
   "ban_seconds": 3600,
   "ban_max_seconds": 604800,
+  "honeypot_ports": [23, 3389],
   "whitelist": ["127.0.0.0/8", "::1/128"]
 }

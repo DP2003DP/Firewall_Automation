@@ -20,6 +20,10 @@ DEFAULTS = {
     # 0 = blocks stay until someone runs "fwauto unblock".
     "ban_seconds": 3600,
     "ban_max_seconds": 7 * 24 * 3600,
+    # Ports nothing legitimate should touch. One new connection to any of
+    # them blocks the source at once. They must not be allowed in ufw, or
+    # the packets are never logged.
+    "honeypot_ports": [],
     # Addresses or networks that are never blocked.
     "whitelist": ["127.0.0.0/8", "::1/128"],
     "db_path": "/var/lib/fwauto/fwauto.db",
@@ -41,6 +45,10 @@ def _check(cfg):
             raise ValueError("%s must be a number of seconds (0 or more)" % key)
     if not isinstance(cfg["scan_detection"], bool):
         raise ValueError("scan_detection must be true or false")
+    hp = cfg["honeypot_ports"]
+    if not isinstance(hp, list) or not all(
+            isinstance(p, int) and not isinstance(p, bool) and 1 <= p <= 65535 for p in hp):
+        raise ValueError("honeypot_ports must be a list of port numbers")
     if not isinstance(cfg["whitelist"], list):
         raise ValueError("whitelist must be a list of addresses or networks")
     if not isinstance(cfg["db_path"], str) or not cfg["db_path"]:

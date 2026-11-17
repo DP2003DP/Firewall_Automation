@@ -15,6 +15,7 @@ Python 3 standard library only. Tested on Ubuntu 25.04, and this version on Ubun
 | --- | --- | --- |
 | SSH brute force | `Failed password` / `Invalid user` lines from sshd | 5 failures from one IP in 60 s |
 | Port scan | `[UFW BLOCK]` kernel lines for new connections (TCP SYN, or UDP) | 6 different ports from one IP in 60 s |
+| Honeypot | the same lines, to a port listed in `honeypot_ports` | 1 connection attempt |
 
 1. `fwauto monitor` follows the systemd journal: sshd messages from root
    processes, and kernel messages. It matches on fields journald fills in
@@ -47,12 +48,13 @@ This installs UFW and OpenSSH server if missing, copies the tool to
 `/opt/fwauto`, allows SSH on the port(s) sshd listens on, sets UFW to deny
 other incoming traffic with logging on, and starts the `fwauto` systemd
 service. It adds the address you are connected from to the whitelist (or
-pass `ADMIN_IP=...`), and warns about other listening ports that UFW will
-start blocking.
+pass `ADMIN_IP=...`), plus the default gateway and DNS servers, and warns
+about other listening ports that UFW will start blocking.
 
 ## Usage
 
 ```bash
+sudo fwauto watch                   # live view: attacks building up, blocks, countdowns
 sudo fwauto blocked                 # blocked IP addresses
 sudo fwauto incidents               # incident history (--ip X, -n 20)
 sudo fwauto stats                   # top attackers, usernames, ports (--hours 24)
@@ -66,7 +68,8 @@ journalctl -u fwauto -f             # live activity
 
 Settings live in `/etc/fwauto/config.json` (see `config.example.json`):
 thresholds, time windows, `ban_seconds` (first ban; 0 = until unblocked),
-`ban_max_seconds` (cap for repeat offenders), and the whitelist. Restart
+`ban_max_seconds` (cap for repeat offenders), `honeypot_ports`, and the
+whitelist. Restart
 with `sudo systemctl restart fwauto` after editing. Removing a block by
 adding the address to the whitelist takes effect on restart.
 
@@ -89,7 +92,7 @@ sudo scripts/lab_setup.sh
 sudo scripts/attack_bruteforce.sh        # 8 wrong-password SSH logins
 sudo fwauto blocked
 sudo fwauto unblock 10.99.0.2
-sudo scripts/attack_portscan.sh          # probes TCP ports 20-40
+sudo scripts/attack_portscan.sh          # probes TCP ports 1000-1020
 sudo fwauto unblock 10.99.0.2
 sudo scripts/attack_injection.sh         # tries to frame 10.99.0.77
 sudo fwauto stats
@@ -119,6 +122,9 @@ NETNS= scripts/attack_portscan.sh <server-ip>
   can forge for a SYN or UDP packet. Someone could spoof a scan "from" your
   gateway and get it banned for an hour. Whitelist the addresses you can't
   afford to lose.
+- Honeypot ports make that worse: one forged packet is enough. They are off
+  unless `honeypot_ports` is set (the example config lists 23 and 3389).
+  Never list a port you allow in ufw; allowed packets aren't logged.
 - `--file` mode trusts the log file. Any local user can add lines to
   `/var/log/auth.log` with `logger -p auth.info`, so prefer the journal.
 - IPv6 addresses are counted one by one; an attacker with a /64 has plenty.
@@ -132,6 +138,7 @@ fwauto/firewall.py    ufw wrapper
 fwauto/storage.py     SQLite incidents and blocks
 fwauto/logsource.py   journal and log-file readers
 fwauto/cli.py         command line interface
+fwauto/watch.py       live terminal view (fwauto watch)
 scripts/              single-VM lab, attack simulators, demo.sh
 tests/                unit tests
 ```

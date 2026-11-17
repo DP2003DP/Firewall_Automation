@@ -9,10 +9,11 @@ from datetime import datetime, timedelta
 from unittest import mock
 
 from fwauto import cli, config, logsource
-from fwauto.detector import Detector, PORT_SCAN, SSH_BRUTE_FORCE
+from fwauto.detector import Detector, HONEYPOT, PORT_SCAN, SSH_BRUTE_FORCE
 from fwauto.firewall import Firewall, parse_denied
 from fwauto.monitor import Monitor
 from fwauto.storage import Storage
+from fwauto.watch import Watcher, render
 
 
 def make_cfg(**overrides):
@@ -127,6 +128,101 @@ class DetectorTests(unittest.TestCase):
     def test_scan_detection_can_be_disabled(self):
         d = Detector(make_cfg(scan_detection=False, scan_max_ports=1))
         self.assertIsNone(d.process(ufw("10.0.0.7", 23), 1))
+
+
+class HoneypotTests(unittest.TestCase):
+    def test_one_probe_blocks(self):
+        d = Detector(make_cfg(honeypot_ports=[23, 3389]))
+        inc = d.process(ufw("10.0.0.7", 3389), 1)
+        self.assertEqual((inc.ip, inc.kind), ("10.0.0.7", HONEYPOT))
+        self.assertEqual(inc.reason, "touched honeypot port 3389/tcp")
+
+    def test_off_by_default(self):
+        d = Detector(make_cfg(scan_max_ports=6))
+        self.assertIsNone(d.process(ufw("10.0.0.7", 23), 1))
+
+    def test_stray_packets_do_not_trip_it(self):
+        d = Detector(make_cfg(honeypot_ports=[23]))
+        self.assertIsNone(d.process(ufw("10.0.0.7", 23, "ACK"), 1))
+        self.assertIsNone(d.process(ufw("10.0.0.7", 23, "ACK RST"), 1))
+
+    def test_works_with_scan_detection_off(self):
+        d = Detector(make_cfg(scan_detection=False, honeypot_ports=[23]))
+        self.assertIsNone(d.process(ufw("10.0.0.7", 80), 1))
+        self.assertEqual(d.process(ufw("10.0.0.7", 23), 1).kind, HONEYPOT)
+
+    def test_udp(self):
+        d = Detector(make_cfg(honeypot_ports=[161]))
+        inc = d.process(ufw("10.0.0.7", 161, "", proto="UDP"), 1)
+        self.assertEqual(inc.reason, "touched honeypot port 161/udp")
+
+    def test_bad_port_lists_rejected(self):
+        for bad in [[0], [70000], ["23"], [True], 23]:
+            with self.assertRaises(ValueError, msg=bad):
+                make_cfg(honeypot_ports=bad)
+
+    def test_counts_as_an_offence(self):
+        with tempfile.TemporaryDirectory() as d:
+            s = Storage(os.path.join(d, "t.db"))
+            with mock.patch("fwauto.monitor.log"):
+                m = Monitor(make_cfg(honeypot_ports=[23], ban_seconds=600), s,
+                            Firewall(dry_run=True), clock=lambda: 0)
+                self.assertEqual(m.handle(ufw("10.0.0.7", 23), 1), "blocked")
+                m.expire_bans(now=10_000)
+                for p in range(30, 36):
+                    action = m.handle(ufw("10.0.0.7", p), 10_001)
+                self.assertEqual(action, "blocked")
+                row = s.active_blocks()[0]
+                self.assertEqual(row["expires_at"] - row["blocked_at"], 1200)
+            self.assertIn(HONEYPOT, {r["kinds"] for r in s.stats()["attackers"]}.pop())
+            s.db.close()
+
+
+class WatchTests(unittest.TestCase):
+    def test_pending_progress(self):
+        d = Detector(make_cfg())
+        for i in range(3):
+            d.process(failed("10.0.0.5"), 100 + i)
+        d.process(ufw("10.0.0.7", 20), 101)
+        rows = d.pending(105)
+        self.assertEqual([(r[0], r[1], r[2], r[3]) for r in rows],
+                         [("10.0.0.5", SSH_BRUTE_FORCE, 3, 5),
+                          ("10.0.0.7", PORT_SCAN, 1, 6)])
+        self.assertEqual(d.pending(1000), [])
+
+    def test_pending_clears_after_incident(self):
+        d = Detector(make_cfg())
+        for i in range(5):
+            d.process(failed("10.0.0.5"), i)
+        self.assertEqual(d.pending(5), [])
+
+    def test_render(self):
+        cfg = make_cfg(honeypot_ports=[23])
+        blocks = [{"ip": "10.0.0.9", "expires_at": 1000 + 3600 + 75, "reason": "x"}]
+        incidents = [{"timestamp": 990, "ip": "10.0.0.9", "kind": "honeypot",
+                      "action": "blocked", "reason": "touched honeypot port 23/tcp"}]
+        pending = [("10.0.0.5", SSH_BRUTE_FORCE, 4, 5, 998)]
+        lines = render(cfg, pending, blocks, incidents, 1000)
+        text = "\n".join(t for t, _ in lines)
+        self.assertIn("honeypots 23", text)
+        self.assertIn("████████··  4/5   2s ago", text)
+        self.assertIn("expires in 1h 01m", text)
+        self.assertIn("touched honeypot port 23/tcp", text)
+        styles = dict(lines)
+        self.assertEqual([s for t, s in lines if t.startswith("  10.0.0.5")], ["hot"])
+
+    def test_watcher_reads_db_and_log(self):
+        with tempfile.TemporaryDirectory() as d:
+            s = Storage(os.path.join(d, "t.db"))
+            s.set_blocked("10.0.0.9", "5 failed SSH logins in 4s", 100, 3700)
+            w = Watcher(make_cfg(), s, source=iter([]), clock=lambda: 200)
+            for i in range(2):
+                w.feed(190 + i, failed("10.0.0.5"))
+            text = "\n".join(t for t, _ in w.lines())
+            self.assertIn("10.0.0.5", text)
+            self.assertIn("2/5", text)
+            self.assertIn("expires in 58m 20s", text)
+            s.db.close()
 
 
 class InjectionTests(unittest.TestCase):
@@ -446,6 +542,18 @@ class CliTests(unittest.TestCase):
             self.run_cli("unblock", "--forget", "10.0.0.5")
         code, out = self.run_cli("unblock", "--forget", "10.0.0.5")
         self.assertEqual((code, out.strip()), (0, "Forgot the history of 10.0.0.5."))
+
+    def test_watch_once_from_file(self):
+        log = os.path.join(self.dir.name, "auth.log")
+        start = datetime.now().astimezone().replace(microsecond=0)
+        with open(log, "w") as fh:
+            for i in range(3):
+                fh.write("%s srv sshd[1]: %s\n" % (
+                    (start + timedelta(seconds=i)).isoformat(), failed("10.0.0.5")))
+        code, out = self.run_cli("watch", "--file", log, "--from-start", "--once")
+        self.assertEqual(code, 0)
+        self.assertIn("ATTACKS IN PROGRESS", out)
+        self.assertIn("3/5", out)
 
     def test_block_for_and_unblock(self):
         code, out = self.run_cli("block", "203.0.113.9", "--for", "30m")

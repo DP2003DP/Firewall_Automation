@@ -1,6 +1,7 @@
 #!/bin/bash
 # Guided live demo for the single-VM lab. Press Enter between steps.
 # NOPAUSE=1 runs straight through (rehearsal, or a backup recording).
+# Run "sudo fwauto watch" in a second terminal to show attacks building up.
 # Needs fwauto installed (sudo ./install.sh). Run with: sudo scripts/demo.sh
 set -u
 [ "$(id -u)" -eq 0 ] || { echo "Run with sudo."; exit 1; }
@@ -39,13 +40,20 @@ journalctl -o cat --no-pager -n 40 _COMM=sshd-session _COMM=sshd-auth _COMM=sshd
 show_log
 fwauto blocked
 
-step "4. port scan, and a repeat offender gets a longer ban"
+step "4. honeypot: a single connection attempt to port 3389"
 reset_attacker
-./attack_portscan.sh 10.99.0.1 20 40 | tail -3
+ip netns exec attacker timeout 2 bash -c "exec 3<>/dev/tcp/10.99.0.1/3389" 2>/dev/null
+echo "one SYN sent to 3389 (RDP), nothing listens there"
 show_log
 fwauto blocked
 
-step "5. what fwauto saw"
+step "5. port scan, and a repeat offender gets a longer ban"
+reset_attacker
+./attack_portscan.sh 10.99.0.1 | tail -3
+show_log
+fwauto blocked
+
+step "6. what fwauto saw"
 fwauto stats
 
 step "cleanup"

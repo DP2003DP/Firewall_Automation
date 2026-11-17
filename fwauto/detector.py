@@ -35,6 +35,7 @@ BROADCAST_MAC = "ff:ff:ff:ff:ff:ff"
 
 SSH_BRUTE_FORCE = "ssh_brute_force"
 PORT_SCAN = "port_scan"
+HONEYPOT = "honeypot"
 
 
 @dataclass
@@ -87,6 +88,7 @@ class Detector:
         self.scan_max = int(cfg["scan_max_ports"])
         self.scan_window = float(cfg["scan_window_seconds"])
         self.scan_enabled = bool(cfg["scan_detection"])
+        self.honeypots = frozenset(cfg.get("honeypot_ports", ()))
         self._failures = defaultdict(deque)   # ip -> deque[(timestamp, user)]
         self._ports = defaultdict(dict)       # ip -> {port: last seen}
         self._invalid_seen = {}               # (ip, source port) -> timestamp
@@ -113,7 +115,7 @@ class Detector:
             self._invalid_seen[(ip, m["port"])] = timestamp
             return self._ssh_failure(ip, m["user"], timestamp)
 
-        if self.scan_enabled:
+        if self.scan_enabled or self.honeypots:
             m = RE_UFW.search(message)
             if m:
                 ip, dst = _valid_ip(m["ip"]), _valid_ip(m["dst"])
@@ -123,7 +125,17 @@ class Detector:
                     return None
                 if not _is_new_connection(m["proto"], m["rest"]):
                     return None
-                return self._blocked_packet(ip, int(m["dport"]), timestamp)
+                port = int(m["dport"])
+                if port in self.honeypots:
+                    # nothing legitimate connects here, so one try is enough
+                    self._ports.pop(ip, None)
+                    return Incident(
+                        ip=ip, kind=HONEYPOT,
+                        reason="touched honeypot port %d/%s" % (port, m["proto"].lower()),
+                        details="ports: %d" % port, timestamp=timestamp)
+                if not self.scan_enabled:
+                    return None
+                return self._blocked_packet(ip, port, timestamp)
         return None
 
     def _ssh_failure(self, ip, user, now):
@@ -162,6 +174,23 @@ class Detector:
             details="ports: " + ", ".join(map(str, hit)),
             timestamp=now,
         )
+
+    def pending(self, now):
+        """Addresses working toward a threshold, for the live view.
+
+        Returns (ip, kind, count, threshold, last_seen), closest to a block first.
+        """
+        out = []
+        for ip, ev in self._failures.items():
+            live = [t for t, _ in ev if now - t <= self.ssh_window]
+            if live:
+                out.append((ip, SSH_BRUTE_FORCE, len(live), self.ssh_max, max(live)))
+        for ip, ports in self._ports.items():
+            live = [t for t in ports.values() if now - t <= self.scan_window]
+            if live:
+                out.append((ip, PORT_SCAN, len(live), self.scan_max, max(live)))
+        out.sort(key=lambda r: (-r[2] / r[3], -r[4]))
+        return out
 
     def prune(self, now):
         """Drop stale state so memory stays flat on a long-running server."""

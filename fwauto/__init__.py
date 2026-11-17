@@ -4,4 +4,4 @@ Watches SSH and UFW logs, detects brute-force logins and port scans,
 and blocks offending IP addresses with UFW.
 """
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
