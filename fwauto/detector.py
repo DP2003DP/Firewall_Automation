@@ -9,10 +9,8 @@ import re
 from collections import defaultdict, deque
 from dataclasses import dataclass
 
-# The username is attacker-controlled and may contain spaces, so a client can
-# log in as "x from 192.0.2.10 port 22" to plant a fake address in the line.
-# The real address is always the last "from ... port ..." in the message, so
-# match the username greedily and anchor the address at the end of the line.
+# The username is attacker-controlled and may contain spaces ("x from
+# 192.0.2.10 port 22"), so match it greedily and take the address at the end.
 
 # sshd: "Failed password for [invalid user ]bob from 10.0.0.5 port 4242 ssh2"
 RE_FAILED = re.compile(
@@ -25,7 +23,7 @@ RE_INVALID = re.compile(
     r"Invalid user (?P<user>.*) from (?P<ip>\S+) port (?P<port>\d+)"
     r"(?: \[preauth\])?\s*$"
 )
-# kernel: "[UFW BLOCK] IN=eth0 OUT= MAC=... SRC=10.0.0.5 DST=10.0.0.1 ... PROTO=TCP SPT=1 DPT=23 ... SYN URGP=0"
+# kernel: "[UFW BLOCK] IN=eth0 ... SRC=10.0.0.5 DST=10.0.0.1 ... PROTO=TCP SPT=1 DPT=23 ... SYN"
 RE_UFW = re.compile(
     r"\[UFW BLOCK\].*?\bSRC=(?P<ip>\S+) DST=(?P<dst>\S+).*?"
     r"\bPROTO=(?P<proto>TCP|UDP)\b.*?\bDPT=(?P<dport>\d+)(?P<rest>.*)$"
@@ -55,12 +53,7 @@ def _valid_ip(text):
 
 
 def _is_new_connection(proto, rest):
-    """True for a packet that starts a connection.
-
-    A scan is a run of connection attempts. Counting only those keeps any
-    stray ACK/FIN/RST packets that reach the deny rule (say, from a server
-    after its connection state expired) from adding up to a fake scan.
-    """
+    # stray ACK/RST packets also hit the deny rule and must not look like a scan
     if proto != "TCP":
         return True
     flags = set(rest.split())
@@ -88,7 +81,7 @@ class Detector:
         self.scan_max = int(cfg["scan_max_ports"])
         self.scan_window = float(cfg["scan_window_seconds"])
         self.scan_enabled = bool(cfg["scan_detection"])
-        self.honeypots = frozenset(cfg.get("honeypot_ports", ()))
+        self.honeypots = frozenset(cfg["honeypot_ports"])
         self._failures = defaultdict(deque)   # ip -> deque[(timestamp, user)]
         self._ports = defaultdict(dict)       # ip -> {port: last seen}
         self._invalid_seen = {}               # (ip, source port) -> timestamp

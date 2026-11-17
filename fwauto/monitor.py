@@ -23,10 +23,10 @@ def log(text):
 
 class Monitor:
     def __init__(self, cfg, storage, firewall, clock=time.time):
-        self.clock = clock
         self.cfg = cfg
         self.storage = storage
         self.firewall = firewall
+        self.clock = clock
         self.detector = Detector(cfg)
 
     def handle(self, message, timestamp):
@@ -79,8 +79,7 @@ class Monitor:
         log("%s, unblocked %s" % (why, ip))
 
     def reconcile(self):
-        """Put back blocks that the database has but ufw lost (ufw reset,
-        a rule deleted by hand). Returns the addresses re-blocked."""
+        """Restore blocks the database has but ufw lost. Returns their IPs."""
         self.expire_bans(self.clock())
         for row in self.storage.active_blocks():
             if config.is_whitelisted(self.cfg, row["ip"]):

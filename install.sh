@@ -25,7 +25,7 @@ while [ -z "$admin_ip" ] && [ "${pid:-1}" -gt 1 ]; do
 done
 # A forged packet "from" the gateway or a DNS server could get it banned
 # (one packet is enough for a honeypot port), so never block those either.
-gateways=$(ip route show default 2>/dev/null | awk '{print $3}'; ip -6 route show default 2>/dev/null | awk '{print $3}')
+gateways=$({ ip route show default; ip -6 route show default; } 2>/dev/null | awk '{print $3}')
 resolvers=$(resolvectl dns 2>/dev/null | sed 's/^[^:]*://' | tr ' ' '\n')
 
 if [ ! -f /etc/fwauto/config.json ]; then
@@ -76,8 +76,7 @@ done
 
 if [ "$(ufw status | head -1)" != "Status: active" ]; then
     others=$(ss -Htln | awk '{print $4}' | sed 's/.*://' | sort -un |
-             grep -vxF -f <(printf '%s\n' ${ssh_ports:-22}) || true)
-    others=$(echo $others)
+             grep -vxF -f <(printf '%s\n' ${ssh_ports:-22}) | tr '\n' ' ' || true)
     if [ -n "$others" ]; then
         echo "warning: these TCP ports are listening and will be blocked from"
         echo "  outside once UFW denies incoming traffic: $others"
@@ -92,6 +91,7 @@ systemctl enable fwauto >/dev/null 2>&1
 systemctl restart fwauto
 
 echo "fwauto installed and running."
+echo "  sudo fwauto watch        live view"
 echo "  sudo fwauto blocked      list blocked addresses"
 echo "  sudo fwauto incidents    show incident history"
 echo "  sudo fwauto stats        attack summary"

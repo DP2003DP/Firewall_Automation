@@ -33,8 +33,7 @@ def bar(count, limit):
 
 
 def render(cfg, pending, blocks, incidents, now, live=True):
-    """Return the screen as (text, style) lines. Styles: title, head, hot,
-    warn, ok, dim, text."""
+    """Return the screen as a list of (text, style) lines."""
     stamp = datetime.fromtimestamp(now).strftime("%Y-%m-%d %H:%M:%S")
     rules = "ssh %d/%ds · scan %s" % (
         cfg["ssh_max_failures"], cfg["ssh_window_seconds"],

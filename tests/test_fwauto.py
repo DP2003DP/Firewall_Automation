@@ -1,3 +1,4 @@
+import argparse
 import io
 import json
 import os
@@ -16,8 +17,7 @@ from fwauto.storage import Storage
 from fwauto.watch import Watcher, render
 
 
-def make_cfg(**overrides):
-    return config.from_dict(**overrides)
+make_cfg = config.from_dict
 
 
 def failed(ip, user="root", port=4000):
@@ -174,7 +174,9 @@ class HoneypotTests(unittest.TestCase):
                 self.assertEqual(action, "blocked")
                 row = s.active_blocks()[0]
                 self.assertEqual(row["expires_at"] - row["blocked_at"], 1200)
-            self.assertIn(HONEYPOT, {r["kinds"] for r in s.stats()["attackers"]}.pop())
+            attackers = s.stats()["attackers"]
+            self.assertEqual(len(attackers), 1)
+            self.assertIn(HONEYPOT, attackers[0]["kinds"])
             s.db.close()
 
 
@@ -208,7 +210,6 @@ class WatchTests(unittest.TestCase):
         self.assertIn("████████··  4/5   2s ago", text)
         self.assertIn("expires in 1h 01m", text)
         self.assertIn("touched honeypot port 23/tcp", text)
-        styles = dict(lines)
         self.assertEqual([s for t, s in lines if t.startswith("  10.0.0.5")], ["hot"])
 
     def test_watcher_reads_db_and_log(self):
@@ -226,8 +227,6 @@ class WatchTests(unittest.TestCase):
 
 
 class InjectionTests(unittest.TestCase):
-    """The username is chosen by the attacker and sshd logs it as given."""
-
     FAKE = "x from 192.0.2.10 port 22"
 
     def test_invalid_user_line_blames_real_address(self):
@@ -277,7 +276,9 @@ class MonitorTests(unittest.TestCase):
                        firewall or Firewall(dry_run=True), clock=lambda: 0)
 
     def attack(self, m, ip="10.0.0.5", start=0):
-        return [m.handle(failed(ip), start + i) for i in range(5)][-1]
+        for i in range(5):
+            action = m.handle(failed(ip), start + i)
+        return action
 
     def test_blocks_and_records(self):
         m = self.monitor()
@@ -443,30 +444,20 @@ class LogSourceTests(unittest.TestCase):
         self.assertEqual(hits, [None] * 7)
 
     def test_follows_file_across_rotation(self):
-        import threading
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "auth.log")
             with open(path, "w") as fh:
                 fh.write("one\n")
-            got = []
             src = logsource.follow_file(path, from_start=True)
-
-            def read():
-                for _, line in src:
-                    got.append(line)
-                    if line == "three":
-                        return
-            t = threading.Thread(target=read, daemon=True)
-            t.start()
+            self.assertEqual(next(src)[1], "one")
             with open(path, "a") as fh:
                 fh.write("two\n")
-            import time as _t
-            _t.sleep(0.7)
+            self.assertEqual(next(src)[1], "two")
             os.rename(path, path + ".1")
             with open(path, "w") as fh:
                 fh.write("three\n")
-            t.join(5)
-            self.assertEqual(got, ["one", "two", "three"])
+            self.assertEqual(next(src)[1], "three")
+            src.close()
 
     def test_journal_filter_uses_trusted_fields(self):
         cmd = logsource.JOURNAL_CMD
@@ -501,6 +492,15 @@ class CliTests(unittest.TestCase):
             json.dump({"whitelist": []}, fh)
         self.db = os.path.join(self.dir.name, "t.db")
 
+    def write_log(self, failures):
+        path = os.path.join(self.dir.name, "auth.log")
+        start = datetime.now().astimezone().replace(microsecond=0)
+        with open(path, "w") as fh:
+            for i in range(failures):
+                fh.write("%s srv sshd[1]: %s\n" % (
+                    (start + timedelta(seconds=i)).isoformat(), failed("10.0.0.5")))
+        return path
+
     def run_cli(self, *argv):
         out = io.StringIO()
         with redirect_stdout(out):
@@ -508,12 +508,7 @@ class CliTests(unittest.TestCase):
         return code, out.getvalue()
 
     def test_monitor_file_once(self):
-        log = os.path.join(self.dir.name, "auth.log")
-        start = datetime.now().astimezone().replace(microsecond=0)
-        with open(log, "w") as fh:
-            for i in range(5):
-                fh.write("%s srv sshd[1]: %s\n" % (
-                    (start + timedelta(seconds=i)).isoformat(), failed("10.0.0.5")))
+        log = self.write_log(5)
         code, out = self.run_cli("monitor", "--file", log, "--from-start", "--once")
         self.assertEqual(code, 0)
         self.assertIn("blocked for 1h", out)
@@ -529,12 +524,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("ended unexpectedly", out)
 
     def test_unblock_forget_resets_offences(self):
-        log = os.path.join(self.dir.name, "auth.log")
-        start = datetime.now().astimezone().replace(microsecond=0)
-        with open(log, "w") as fh:
-            for i in range(5):
-                fh.write("%s srv sshd[1]: %s\n" % (
-                    (start + timedelta(seconds=i)).isoformat(), failed("10.0.0.5")))
+        log = self.write_log(5)
         for _ in range(2):
             code, out = self.run_cli("monitor", "--file", log, "--from-start", "--once")
             self.assertIn("blocked for 1h", out)
@@ -544,12 +534,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual((code, out.strip()), (0, "Forgot the history of 10.0.0.5."))
 
     def test_watch_once_from_file(self):
-        log = os.path.join(self.dir.name, "auth.log")
-        start = datetime.now().astimezone().replace(microsecond=0)
-        with open(log, "w") as fh:
-            for i in range(3):
-                fh.write("%s srv sshd[1]: %s\n" % (
-                    (start + timedelta(seconds=i)).isoformat(), failed("10.0.0.5")))
+        log = self.write_log(3)
         code, out = self.run_cli("watch", "--file", log, "--from-start", "--once")
         self.assertEqual(code, 0)
         self.assertIn("ATTACKS IN PROGRESS", out)
@@ -572,7 +557,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(cli.duration_arg("2h"), 7200)
         self.assertEqual(cli.duration_arg("0.5s"), 1)
         for bad in ["", "abc", "-5m", "0"]:
-            with self.assertRaises(Exception):
+            with self.assertRaises(argparse.ArgumentTypeError):
                 cli.duration_arg(bad)
 
 

@@ -26,12 +26,12 @@ CREATE INDEX IF NOT EXISTS incidents_ip ON incidents (ip);
 """
 
 AUTO_KINDS = ("ssh_brute_force", "port_scan", "honeypot")
-_AUTO_SQL = "(%s)" % ", ".join("'%s'" % k for k in AUTO_KINDS)
+AUTO_MARKS = ", ".join("?" * len(AUTO_KINDS))
 
 
 class Storage:
     def __init__(self, path):
-        directory = os.path.dirname(path) if path != ":memory:" else ""
+        directory = os.path.dirname(path)
         if directory:
             os.makedirs(directory, exist_ok=True)
         # the monitor and the CLI write to the same file
@@ -83,7 +83,7 @@ class Storage:
         self.db.commit()
 
     def forget(self, ip):
-        """Drop an address's history, so its next ban starts from the first."""
+        """Delete an address's history so repeat-offence bans start over."""
         self.db.execute("DELETE FROM incidents WHERE ip = ?", (ip,))
         self.db.execute("DELETE FROM blocks WHERE ip = ? AND active = 0", (ip,))
         self.db.commit()
@@ -107,10 +107,9 @@ class Storage:
 
     def offences(self, ip):
         """How many times this address was blocked automatically before."""
-        marks = ",".join("?" * len(AUTO_KINDS))
         return self.db.execute(
             "SELECT COUNT(*) FROM incidents WHERE ip = ? AND action = 'blocked'"
-            " AND kind IN (%s)" % marks, (ip, *AUTO_KINDS)
+            " AND kind IN (%s)" % AUTO_MARKS, (ip, *AUTO_KINDS)
         ).fetchone()[0]
 
     def stats(self, since=0.0, top=5):
@@ -121,11 +120,12 @@ class Storage:
         attackers = q(
             "SELECT ip, COUNT(*) AS n, MAX(timestamp) AS last,"
             " GROUP_CONCAT(DISTINCT kind) AS kinds FROM incidents"
-            " WHERE timestamp >= ? AND kind IN " + _AUTO_SQL +
-            " GROUP BY ip ORDER BY n DESC, last DESC LIMIT ?", (since, top)).fetchall()
+            " WHERE timestamp >= ? AND kind IN (%s)"
+            " GROUP BY ip ORDER BY n DESC, last DESC LIMIT ?" % AUTO_MARKS,
+            (since, *AUTO_KINDS, top)).fetchall()
         details = [r["details"] for r in q(
             "SELECT details FROM incidents WHERE timestamp >= ?"
-            " AND kind IN " + _AUTO_SQL, (since,))]
+            " AND kind IN (%s)" % AUTO_MARKS, (since, *AUTO_KINDS))]
         return {
             "by_kind": by_kind,
             "attackers": attackers,

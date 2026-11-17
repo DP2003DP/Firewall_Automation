@@ -7,13 +7,8 @@ import subprocess
 import time
 from datetime import datetime
 
-# Match on fields journald fills in itself (underscore prefix). SYSLOG_IDENTIFIER
-# is chosen by the sender, so "logger -t sshd ..." from any local user would
-# pass a filter on it. _COMM alone is also forgeable (copy logger to
-# /tmp/sshd), so require root as well.
-# sshd logs as "sshd" (older), "sshd-session" (OpenSSH 9.8+) or "sshd-auth"
-# (OpenSSH 10+). Same-field matches are ORed, different fields ANDed, and "+"
-# starts an alternative; UFW logs through the kernel.
+# Filter on fields journald sets itself: any user can fake SYSLOG_IDENTIFIER
+# with "logger -t sshd". sshd-session and sshd-auth are OpenSSH 9.8+ and 10+.
 SSH_PROGRAMS = ("sshd", "sshd-session", "sshd-auth")
 JOURNAL_CMD = [
     "journalctl", "--follow", "--lines=0", "--output=json",
@@ -76,11 +71,9 @@ def line_time(line, now=None):
 
 
 def follow_file(path, from_start=False, follow=True):
-    """Tail a plain log file such as /var/log/auth.log.
+    """Tail a plain log file such as /var/log/auth.log, across logrotate.
 
-    Lines are stamped with the time written in them, so reading an old file
-    with from_start does not squash weeks of history into one second. Follows
-    the file across logrotate (rename or copytruncate).
+    Lines carry their own timestamps, so replaying an old file keeps its pace.
     """
     fh = open(path, errors="replace")
     try:

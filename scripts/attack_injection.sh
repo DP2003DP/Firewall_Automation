@@ -1,8 +1,6 @@
 #!/bin/bash
-# Log-injection attack: frame an innocent address by hiding it in the SSH
-# username. sshd logs the username as sent, so the log line reads
-#   Invalid user x from <victim> port 22 from <attacker> port 51234
-# A parser that takes the first "from <ip>" blocks the victim instead.
+# Try to frame an innocent address by hiding it in the SSH username.
+# fwauto should block the attacker, not the victim.
 # Usage: sudo scripts/attack_injection.sh [target] [victim] [attempts]
 set -u
 TARGET=${1:-10.99.0.1}

@@ -13,6 +13,7 @@ from . import __version__, config, logsource
 from .firewall import Firewall, FirewallError
 from .monitor import Monitor, duration, log
 from .storage import Storage
+from .watch import Watcher
 
 
 def fmt_time(ts):
@@ -84,14 +85,11 @@ def cmd_monitor(args, cfg, storage, firewall):
         return 0
     if args.file and args.once:
         return 0
-    # The log stream should never end. Exit non-zero so systemd restarts us
-    # instead of leaving the server unprotected.
     log("log source ended unexpectedly")
     return 1
 
 
 def cmd_watch(args, cfg, storage, firewall):
-    from .watch import Watcher
     if args.file:
         source = logsource.follow_file(args.file, args.from_start, not args.once)
     elif args.once:
@@ -214,12 +212,11 @@ def build_parser():
                    % config.DEFAULT_CONFIG_PATH)
     p.add_argument("--db", help="database path (overrides the config file)")
     p.add_argument("--dry-run", action="store_true",
-                   help="do not touch UFW; uses a throwaway database unless --db is given")
+                   help="don't change UFW or the real database (use --db to keep results)")
     sub = p.add_subparsers(dest="command", required=True)
 
     m = sub.add_parser("monitor", help="watch the logs and block attackers")
-    m.add_argument("--file", help="tail this log file instead of the journal "
-                   "(less safe: any local user can write auth lines with logger)")
+    m.add_argument("--file", help="tail this log file instead of the journal")
     m.add_argument("--from-start", action="store_true",
                    help="with --file: read from the beginning")
     m.add_argument("--once", action="store_true",
@@ -259,7 +256,7 @@ def build_parser():
     u = sub.add_parser("unblock", help="remove a block")
     u.add_argument("ip", type=ip_arg)
     u.add_argument("--forget", action="store_true",
-                   help="also delete its incident history (next ban starts at the first)")
+                   help="also clear its history, so later bans start at the first length")
     u.set_defaults(func=cmd_unblock)
     return p
 

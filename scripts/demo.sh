@@ -1,7 +1,7 @@
 #!/bin/bash
 # Guided live demo for the single-VM lab. Press Enter between steps.
-# NOPAUSE=1 runs straight through (rehearsal, or a backup recording).
-# Run "sudo fwauto watch" in a second terminal to show attacks building up.
+# NOPAUSE=1 runs straight through. "sudo fwauto watch" in a second
+# terminal shows each attack building up.
 # Needs fwauto installed (sudo ./install.sh). Run with: sudo scripts/demo.sh
 set -u
 [ "$(id -u)" -eq 0 ] || { echo "Run with sudo."; exit 1; }
@@ -18,7 +18,7 @@ show_log() { sleep 2; journalctl -u fwauto -o cat --no-pager -n "${1:-1}"; }
 
 step "setup: attacker namespace $ATTACKER -> server 10.99.0.1"
 ./lab_setup.sh 2>/dev/null | tail -1
-# start from a clean slate so bans read 1h, 2h, 4h even after a rehearsal
+# forget earlier runs so ban lengths start over
 fwauto unblock --forget "$ATTACKER" >/dev/null 2>&1 || true
 ufw status | sed -n '1,8p'
 

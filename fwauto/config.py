@@ -20,9 +20,8 @@ DEFAULTS = {
     # 0 = blocks stay until someone runs "fwauto unblock".
     "ban_seconds": 3600,
     "ban_max_seconds": 7 * 24 * 3600,
-    # Ports nothing legitimate should touch. One new connection to any of
-    # them blocks the source at once. They must not be allowed in ufw, or
-    # the packets are never logged.
+    # One connection attempt to any of these blocks the source. Don't allow
+    # them in ufw, or the packets are never logged.
     "honeypot_ports": [],
     # Addresses or networks that are never blocked.
     "whitelist": ["127.0.0.0/8", "::1/128"],
@@ -34,20 +33,23 @@ _SECONDS = ("ssh_window_seconds", "scan_window_seconds",
             "ban_seconds", "ban_max_seconds")
 
 
+def _is_int(v):
+    # json true/false load as bool, which is a subclass of int
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
 def _check(cfg):
     for key in _POSITIVE:
-        v = cfg[key]
-        if isinstance(v, bool) or not isinstance(v, int) or v < 1:
+        if not _is_int(cfg[key]) or cfg[key] < 1:
             raise ValueError("%s must be a whole number of at least 1" % key)
     for key in _SECONDS:
         v = cfg[key]
-        if isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0:
+        if not (_is_int(v) or isinstance(v, float)) or v < 0:
             raise ValueError("%s must be a number of seconds (0 or more)" % key)
     if not isinstance(cfg["scan_detection"], bool):
         raise ValueError("scan_detection must be true or false")
-    hp = cfg["honeypot_ports"]
-    if not isinstance(hp, list) or not all(
-            isinstance(p, int) and not isinstance(p, bool) and 1 <= p <= 65535 for p in hp):
+    ports = cfg["honeypot_ports"]
+    if not isinstance(ports, list) or not all(_is_int(p) and 1 <= p <= 65535 for p in ports):
         raise ValueError("honeypot_ports must be a list of port numbers")
     if not isinstance(cfg["whitelist"], list):
         raise ValueError("whitelist must be a list of addresses or networks")
@@ -57,7 +59,6 @@ def _check(cfg):
 
 def load(path=None):
     """Return the config dict. A missing default file just means defaults."""
-    cfg = dict(DEFAULTS)
     explicit = path is not None
     path = path or DEFAULT_CONFIG_PATH
     if os.path.exists(path):
@@ -65,26 +66,17 @@ def load(path=None):
             user = json.load(fh)
         if not isinstance(user, dict):
             raise ValueError("%s must hold a JSON object" % path)
-        unknown = set(user) - set(DEFAULTS)
-        if unknown:
-            raise ValueError("unknown config keys: " + ", ".join(sorted(unknown)))
-        cfg.update(user)
-    elif explicit:
+        return from_dict(**user)
+    if explicit:
         raise FileNotFoundError(path)
-    return _finish(cfg)
+    return from_dict()
 
 
 def from_dict(**overrides):
-    """Defaults plus overrides, validated the same way as a config file."""
-    cfg = dict(DEFAULTS)
     unknown = set(overrides) - set(DEFAULTS)
     if unknown:
         raise ValueError("unknown config keys: " + ", ".join(sorted(unknown)))
-    cfg.update(overrides)
-    return _finish(cfg)
-
-
-def _finish(cfg):
+    cfg = dict(DEFAULTS, **overrides)
     _check(cfg)
     # Fail early on a bad whitelist rather than at block time.
     cfg["whitelist_networks"] = [
@@ -102,10 +94,7 @@ def is_whitelisted(cfg, ip):
 
 
 def ban_length(cfg, offences):
-    """Seconds to ban for, given how many times the address was banned before.
-
-    None means no expiry.
-    """
+    """Seconds to ban for after this many earlier bans; None means forever."""
     base = cfg["ban_seconds"]
     if not base:
         return None

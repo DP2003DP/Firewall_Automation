@@ -7,7 +7,8 @@ port scans, and blocks the source IP address with UFW. It keeps a record of
 every incident and has a small command line interface for reviewing and
 undoing blocks.
 
-Python 3 standard library only. Tested on Ubuntu 25.04, and this version on Ubuntu 26.04 (OpenSSH 10.2, ufw 0.36.2).
+Python 3 standard library only. Tested on Ubuntu 25.04 and 26.04 with UFW
+and OpenSSH.
 
 ## How it works
 
@@ -29,8 +30,8 @@ Python 3 standard library only. Tested on Ubuntu 25.04, and this version on Ubun
 5. On startup fwauto checks that every block in its database still has a
    ufw rule, and puts back any that went missing.
 
-Whitelisted addresses (loopback, and the address you installed from) are
-recorded but never blocked.
+Whitelisted addresses (loopback, the address you installed from, the
+gateway and DNS servers) are recorded but never blocked.
 
 The SSH username is chosen by the client and sshd logs it as sent, spaces
 and all. A client logging in as `x from 10.0.0.9 port 22` produces
@@ -54,7 +55,7 @@ about other listening ports that UFW will start blocking.
 ## Usage
 
 ```bash
-sudo fwauto watch                   # live view: attacks building up, blocks, countdowns
+sudo fwauto watch                   # live view of attacks and blocks
 sudo fwauto blocked                 # blocked IP addresses
 sudo fwauto incidents               # incident history (--ip X, -n 20)
 sudo fwauto stats                   # top attackers, usernames, ports (--hours 24)
@@ -69,9 +70,8 @@ journalctl -u fwauto -f             # live activity
 Settings live in `/etc/fwauto/config.json` (see `config.example.json`):
 thresholds, time windows, `ban_seconds` (first ban; 0 = until unblocked),
 `ban_max_seconds` (cap for repeat offenders), `honeypot_ports`, and the
-whitelist. Restart
-with `sudo systemctl restart fwauto` after editing. Removing a block by
-adding the address to the whitelist takes effect on restart.
+whitelist. Restart with `sudo systemctl restart fwauto` after editing.
+Adding a blocked address to the whitelist lifts its block on restart.
 
 ## Testing
 
@@ -95,6 +95,8 @@ sudo fwauto unblock 10.99.0.2
 sudo scripts/attack_portscan.sh          # probes TCP ports 1000-1020
 sudo fwauto unblock 10.99.0.2
 sudo scripts/attack_injection.sh         # tries to frame 10.99.0.77
+sudo fwauto unblock 10.99.0.2
+sudo ip netns exec attacker nc -zw1 10.99.0.1 3389   # one honeypot probe
 sudo fwauto stats
 sudo scripts/lab_teardown.sh
 ```
@@ -118,13 +120,14 @@ NETNS= scripts/attack_portscan.sh <server-ip>
   minute), so slow or very small scans can go unnoticed.
 - Only password and keyboard-interactive failures count. Failed public-key
   attempts are ignored, because normal clients often try several keys.
-- Port scans are judged by the packet's source address, which an attacker
-  can forge for a SYN or UDP packet. Someone could spoof a scan "from" your
-  gateway and get it banned for an hour. Whitelist the addresses you can't
-  afford to lose.
-- Honeypot ports make that worse: one forged packet is enough. They are off
-  unless `honeypot_ports` is set (the example config lists 23 and 3389).
-  Never list a port you allow in ufw; allowed packets aren't logged.
+- Port scans are judged by the packet's source address, which can be
+  forged for a SYN or UDP packet, so a fake scan can get any address banned
+  for an hour. With honeypot ports one forged packet is enough. The
+  installer whitelists the gateway and DNS servers; add any other address
+  you can't afford to lose.
+- Honeypot ports are off unless `honeypot_ports` is set (the example config
+  lists 23 and 3389). Don't list a port you allow in ufw: allowed packets
+  aren't logged.
 - `--file` mode trusts the log file. Any local user can add lines to
   `/var/log/auth.log` with `logger -p auth.info`, so prefer the journal.
 - IPv6 addresses are counted one by one; an attacker with a /64 has plenty.
